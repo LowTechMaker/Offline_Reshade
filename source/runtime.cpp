@@ -1138,6 +1138,39 @@ void reshade::runtime::save_config() const
 #endif
 }
 
+void reshade::runtime::set_performance_mode(bool value)
+{
+	if (_performance_mode == value)
+		return;
+
+	// Uniform variables are replaced with specialization constants in performance mode, which are filled from the
+	// preset during effect compilation, so make sure the current values made it into the preset before switching
+	if (value)
+		save_current_preset();
+
+	_performance_mode = value;
+
+	save_config();
+
+	reload_effects();
+}
+void reshade::runtime::set_effect_load_skipping(bool value)
+{
+	if (_effect_load_skipping == value)
+		return;
+
+	_effect_load_skipping = value;
+
+	save_config();
+
+	// Force load all effects in case some were skipped while load skipping was still enabled
+	reload_effects(!value);
+}
+void reshade::runtime::reload_all_effects(bool force_load_all)
+{
+	reload_effects(force_load_all);
+}
+
 void reshade::runtime::load_current_preset()
 {
 	_preset_is_incomplete = false;

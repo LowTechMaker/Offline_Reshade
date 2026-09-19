@@ -2124,7 +2124,14 @@ public sealed partial class MainWindow : Window
             foreach (var uniform in group)
                 groupPanel.Children.Add(BuildUniformEditor(uniform));
 
-            panel.Children.Add(CreateNestedSectionExpander(group.Key, true, groupPanel));
+            // Performance mode turns uniforms into compile-time constants, so there is nothing left to edit
+            panel.Children.Add(new ContentControl
+            {
+                Content = CreateNestedSectionExpander(group.Key, true, groupPanel),
+                IsEnabled = ViewModel.CanEditUniforms,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch
+            });
         }
 
         return panel;

@@ -22,6 +22,9 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _showFps = true;
     private int _sliderDragSensitivity = 1;
     private bool _sliderSymLog;
+    private bool _autoSavePreset;
+    private bool _performanceMode;
+    private bool _skipDisabledEffects;
 
     public SettingsViewModel(AppPaths paths)
     {
@@ -48,6 +51,9 @@ public sealed class SettingsViewModel : ObservableObject
     public bool ShowFps { get => _showFps; set => SetProperty(ref _showFps, value); }
     public int SliderDragSensitivity { get => _sliderDragSensitivity; set => SetProperty(ref _sliderDragSensitivity, NormalizeSliderDragSensitivity(value)); }
     public bool SliderSymLog { get => _sliderSymLog; set => SetProperty(ref _sliderSymLog, value); }
+    public bool AutoSavePreset { get => _autoSavePreset; set => SetProperty(ref _autoSavePreset, value); }
+    public bool PerformanceMode { get => _performanceMode; set => SetProperty(ref _performanceMode, value); }
+    public bool SkipDisabledEffects { get => _skipDisabledEffects; set => SetProperty(ref _skipDisabledEffects, value); }
 
     private static int NormalizeSliderDragSensitivity(int value) => value switch
     {

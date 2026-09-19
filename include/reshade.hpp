@@ -47,6 +47,9 @@ RESHADE_API_LIBRARY_DECL void ReShadeSetExternalAddonOverlay(reshade::api::effec
 RESHADE_API_LIBRARY_DECL void ReShadeAddExternalOverlayInputEvent(reshade::api::effect_runtime *runtime, uint32_t message, uintptr_t wparam, intptr_t lparam);
 RESHADE_API_LIBRARY_DECL void ReShadeNotifyOfflineInputChanged(reshade::api::effect_runtime *runtime, const char *color_path, const char *depth_path, uint32_t width, uint32_t height, uint64_t generation);
 RESHADE_API_LIBRARY_DECL bool ReShadeIsEffectRuntimeLoading(reshade::api::effect_runtime *runtime);
+RESHADE_API_LIBRARY_DECL bool ReShadeGetRuntimeToggle(reshade::api::effect_runtime *runtime, const char *key);
+RESHADE_API_LIBRARY_DECL void ReShadeSetRuntimeToggle(reshade::api::effect_runtime *runtime, const char *key, bool value);
+RESHADE_API_LIBRARY_DECL void ReShadeReloadEffects(reshade::api::effect_runtime *runtime, bool force_load_all);
 RESHADE_API_LIBRARY_DECL void ReShadeSetAddonImGuiCaptureEnabled(bool enabled);
 RESHADE_API_LIBRARY_DECL bool ReShadeGetAddonImGuiCaptureJson(char *value, size_t *value_size);
 RESHADE_API_LIBRARY_DECL bool ReShadeInjectAddonImGuiValue(const char *id, const char *value);

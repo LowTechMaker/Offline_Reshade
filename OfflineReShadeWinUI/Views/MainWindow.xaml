@@ -18,6 +18,7 @@
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
       </Grid.RowDefinitions>
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="Auto" />
@@ -32,8 +33,45 @@
         <Button Content="ReShade Shot" Command="{x:Bind ViewModel.ReShadeShotCommand}" />
         <Button Content="Save PNG" Command="{x:Bind ViewModel.SavePngCommand}" />
         <Button Content="Reload" Command="{x:Bind ViewModel.ReloadCommand}" />
-        <Button Content="Save Preset" Command="{x:Bind ViewModel.SavePresetCommand}" />
         <Button Content="Settings" Command="{x:Bind ViewModel.ToggleSettingsCommand}" />
+      </StackPanel>
+
+      <StackPanel Grid.Row="1"
+                  Grid.ColumnSpan="3"
+                  Orientation="Horizontal"
+                  Spacing="8"
+                  Margin="0,10,0,0"
+                  VerticalAlignment="Center">
+        <TextBlock Text="Preset:" Foreground="#C9D1D9" VerticalAlignment="Center" />
+        <TextBlock Text="{x:Bind ViewModel.PresetDisplayName, Mode=OneWay}"
+                   Foreground="White"
+                   FontWeight="SemiBold"
+                   VerticalAlignment="Center"
+                   MaxWidth="240"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTipService.ToolTip="{x:Bind ViewModel.ActivePresetPath, Mode=OneWay}" />
+        <Button Content="Load..." Command="{x:Bind ViewModel.LoadPresetCommand}" />
+        <Button Content="Save" Command="{x:Bind ViewModel.SavePresetCommand}" />
+        <Button Content="Save As..." Command="{x:Bind ViewModel.SavePresetAsCommand}" />
+        <CheckBox Content="Auto Save"
+                  IsChecked="{x:Bind ViewModel.Settings.AutoSavePreset, Mode=TwoWay}"
+                  Foreground="#C9D1D9"
+                  VerticalAlignment="Center"
+                  ToolTipService.ToolTip="Write every change straight back to the preset file instead of waiting for Save." />
+        <Border Width="1" Height="20" Background="#30363D" Margin="6,0" />
+        <CheckBox Content="Performance Mode"
+                  IsChecked="{x:Bind ViewModel.Settings.PerformanceMode, Mode=TwoWay}"
+                  Foreground="#C9D1D9"
+                  VerticalAlignment="Center"
+                  ToolTipService.ToolTip="Recompile effects into a faster form. Parameters become constants and can no longer be tweaked." />
+        <CheckBox Content="Only Load Active Effects"
+                  IsChecked="{x:Bind ViewModel.Settings.SkipDisabledEffects, Mode=TwoWay}"
+                  Foreground="#C9D1D9"
+                  VerticalAlignment="Center"
+                  ToolTipService.ToolTip="Skip compiling effects that are not enabled. Speeds up loading a large shader folder." />
+        <Button Content="Load All Effects"
+                Command="{x:Bind ViewModel.ForceLoadAllEffectsCommand}"
+                Visibility="{x:Bind ViewModel.Settings.SkipDisabledEffects, Mode=OneWay}" />
       </StackPanel>
 
       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
@@ -58,7 +96,7 @@
         <TextBlock Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" Foreground="White" FontWeight="SemiBold" />
       </StackPanel>
 
-      <ProgressBar Grid.Row="1"
+      <ProgressBar Grid.Row="2"
                    Grid.ColumnSpan="3"
                    Height="3"
                    Margin="0,8,0,0"
@@ -239,6 +277,11 @@
                 <ScrollViewer x:Name="ControlsScrollViewer"
                               HorizontalScrollBarVisibility="Disabled">
                   <StackPanel Padding="12" Spacing="12">
+                    <InfoBar IsOpen="{x:Bind ViewModel.IsPerformanceModeNoticeVisible, Mode=OneWay}"
+                             IsClosable="False"
+                             Severity="Warning"
+                             Title="Performance Mode is on"
+                             Message="Parameters are compiled into constants. Turn it off to tweak them again." />
                     <StackPanel x:Name="ControlsPanel" Spacing="10" />
                     <Expander Header="Log" IsExpanded="False">
                       <TextBox Text="{x:Bind ViewModel.LogText, Mode=OneWay}"

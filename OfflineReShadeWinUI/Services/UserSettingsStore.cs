@@ -73,6 +73,9 @@ public sealed class PersistedUiSettings
     public bool? ShowFps { get; set; }
     public int? SliderDragSensitivity { get; set; }
     public bool? SliderSymLog { get; set; }
+    public bool? AutoSavePreset { get; set; }
+    public bool? PerformanceMode { get; set; }
+    public bool? SkipDisabledEffects { get; set; }
     public string? InputMode { get; set; }
     public PersistedProfilePaths? KksPaths { get; set; }
     public PersistedProfilePaths? KkPaths { get; set; }

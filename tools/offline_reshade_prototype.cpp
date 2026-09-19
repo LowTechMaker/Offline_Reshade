@@ -71,6 +71,9 @@ namespace
 		uint32_t preview_height = 0;
 		bool interactive = false;
 		bool disable_input_watch = false;
+		bool performance_mode = false;
+		bool skip_disabled_effects = false;
+		bool auto_save_preset = false;
 	};
 
 	struct reshade_exports
@@ -90,6 +93,9 @@ namespace
 		void (*set_addon_imgui_capture_enabled)(bool) = nullptr;
 		bool (*get_addon_imgui_capture_json)(char *, size_t *) = nullptr;
 		bool (*inject_addon_imgui_value)(const char *, const char *) = nullptr;
+		bool (*get_runtime_toggle)(reshade::api::effect_runtime *, const char *) = nullptr;
+		void (*set_runtime_toggle)(reshade::api::effect_runtime *, const char *, bool) = nullptr;
+		void (*reload_effects)(reshade::api::effect_runtime *, bool) = nullptr;
 	};
 
 	struct shared_preview_state
@@ -115,7 +121,7 @@ namespace
 	void print_usage()
 	{
 		std::cout <<
-			"usage: OfflineReShadePrototype [--color <png>] [--depth <png|rfloat>] [--depth-format <raw|rgba>] [--depth-profile <kks|kk>] [--depth-downsample <max2x2|box>] [--effect-dir <dir>] [--output <png>] [--width <w> --height <h>] [--parent-hwnd <hwnd>] [--overlay-hwnd <hwnd>] [--addon-overlay-shared] [--addon-overlay-width <w> --addon-overlay-height <h>] [--control-pipe <name>] [--preview-pipe <name>] [--preview-shared] [--preview-width <w> --preview-height <h>] [--interactive] [--disable-input-watch]\n";
+			"usage: OfflineReShadePrototype [--color <png>] [--depth <png|rfloat>] [--depth-format <raw|rgba>] [--depth-profile <kks|kk>] [--depth-downsample <max2x2|box>] [--effect-dir <dir>] [--output <png>] [--width <w> --height <h>] [--parent-hwnd <hwnd>] [--overlay-hwnd <hwnd>] [--addon-overlay-shared] [--addon-overlay-width <w> --addon-overlay-height <h>] [--control-pipe <name>] [--preview-pipe <name>] [--preview-shared] [--preview-width <w> --preview-height <h>] [--interactive] [--disable-input-watch] [--performance-mode <0|1>] [--skip-disabled-effects <0|1>] [--auto-save-preset <0|1>]\n";
 	}
 
 	std::wstring widen_utf8(const std::string &value)
@@ -143,6 +149,26 @@ namespace
 	std::string path_utf8(const std::filesystem::path &path)
 	{
 		return narrow_utf8(path.wstring());
+	}
+
+	bool parse_bool(const wchar_t *text, bool &value)
+	{
+		if (text == nullptr)
+			return false;
+
+		const std::wstring_view token(text);
+		if (token == L"1" || token == L"true" || token == L"on")
+		{
+			value = true;
+			return true;
+		}
+		if (token == L"0" || token == L"false" || token == L"off")
+		{
+			value = false;
+			return true;
+		}
+
+		return false;
 	}
 
 	bool parse_uint(const wchar_t *text, uint32_t &value)
@@ -298,6 +324,21 @@ namespace
 			else if (arg == L"--disable-input-watch")
 			{
 				opts.disable_input_watch = true;
+			}
+			else if (arg == L"--performance-mode")
+			{
+				if (++i >= argc || !parse_bool(argv[i], opts.performance_mode))
+					return false;
+			}
+			else if (arg == L"--skip-disabled-effects")
+			{
+				if (++i >= argc || !parse_bool(argv[i], opts.skip_disabled_effects))
+					return false;
+			}
+			else if (arg == L"--auto-save-preset")
+			{
+				if (++i >= argc || !parse_bool(argv[i], opts.auto_save_preset))
+					return false;
 			}
 			else if (arg == L"--help" || arg == L"-h")
 			{
@@ -493,18 +534,74 @@ namespace
 		return result;
 	}
 
-	std::filesystem::path make_preset(const options &opts, const std::filesystem::path &work_dir)
+	// The runtime writes to its current preset continuously (on every uniform change, and once more right before
+	// switching away from it), so it is never pointed at the file the user picked. It gets a private working copy
+	// instead, and that copy is only exported back to the user file on an explicit save.
+	std::filesystem::path working_preset_path(const std::filesystem::path &work_dir, unsigned int index)
 	{
-		if (!opts.preset_path.empty())
-			return opts.preset_path;
+		return work_dir / (L"ActivePreset." + std::to_wstring(index) + L".ini");
+	}
 
-		const std::filesystem::path preset_path = work_dir / L"OfflinePreset.ini";
-		if (std::filesystem::exists(preset_path))
-			return preset_path;
+	bool write_working_preset(const std::filesystem::path &source, const std::filesystem::path &dest)
+	{
+		std::string content;
 
-		std::ofstream preset(preset_path, std::ios::binary | std::ios::trunc);
-		preset << "Techniques=\n";
-		preset << "TechniqueSorting=\n";
+		std::error_code ec;
+		if (!source.empty() && std::filesystem::exists(source, ec))
+		{
+			std::ifstream in(source, std::ios::binary);
+			content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+		}
+
+		// 'resolve_preset_path' rejects an existing file without a "Techniques" key as not being a preset
+		if (content.find("Techniques=") == std::string::npos)
+		{
+			if (!content.empty() && content.back() != '\n')
+				content += '\n';
+			content += "Techniques=\nTechniqueSorting=\n";
+		}
+
+		std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+		if (!out)
+			return false;
+
+		out.write(content.data(), static_cast<std::streamsize>(content.size()));
+		return out.good();
+	}
+
+	// Working copies can survive a crash, and one can also be written back out by the runtime's deferred
+	// 'ini_file::flush_cache' right after being retired, so clear out whatever is left from earlier runs
+	void remove_stale_working_presets(const std::filesystem::path &work_dir)
+	{
+		std::error_code ec;
+		for (const auto &entry : std::filesystem::directory_iterator(work_dir, ec))
+		{
+			const std::wstring name = entry.path().filename().wstring();
+			if (name.rfind(L"ActivePreset.", 0) == 0 && entry.path().extension() == L".ini")
+				std::filesystem::remove(entry.path(), ec);
+		}
+	}
+
+	// Seeds the first working copy and reports which file it was seeded from
+	std::filesystem::path make_preset(const options &opts, const std::filesystem::path &work_dir, std::filesystem::path &out_source_path)
+	{
+		remove_stale_working_presets(work_dir);
+
+		// Saves resolve this against the working directory, not the ReShade base path, so pin it down now
+		out_source_path = opts.preset_path.empty() ? opts.preset_path : std::filesystem::absolute(opts.preset_path);
+
+		if (out_source_path.empty())
+		{
+			// Without an explicit preset there is no user file to protect, so fall back to the internal one
+			out_source_path = work_dir / L"OfflinePreset.ini";
+
+			std::error_code ec;
+			if (!std::filesystem::exists(out_source_path, ec))
+				write_working_preset({}, out_source_path);
+		}
+
+		const std::filesystem::path preset_path = working_preset_path(work_dir, 0);
+		write_working_preset(out_source_path, preset_path);
 		return preset_path;
 	}
 
@@ -571,8 +668,8 @@ namespace
 		config << "NoDebugInfo=1\n";
 		config << "NoEffectCache=1\n";
 		config << "NoReloadOnInit=0\n";
-		config << "PerformanceMode=0\n";
-		config << "SkipLoadingDisabledEffects=0\n";
+		config << "PerformanceMode=" << (opts.performance_mode ? "1" : "0") << "\n";
+		config << "SkipLoadingDisabledEffects=" << (opts.skip_disabled_effects ? "1" : "0") << "\n";
 		config << "EffectSearchPaths=" << path_utf8(opts.effect_dir) << "\\**\n";
 		config << "TextureSearchPaths=" << join_search_paths(texture_dirs, true) << "\n";
 		config << "PresetPath=" << path_utf8(preset_path) << "\n";
@@ -628,6 +725,9 @@ namespace
 		result.set_addon_imgui_capture_enabled = reinterpret_cast<decltype(result.set_addon_imgui_capture_enabled)>(GetProcAddress(result.module, "ReShadeSetAddonImGuiCaptureEnabled"));
 		result.get_addon_imgui_capture_json = reinterpret_cast<decltype(result.get_addon_imgui_capture_json)>(GetProcAddress(result.module, "ReShadeGetAddonImGuiCaptureJson"));
 		result.inject_addon_imgui_value = reinterpret_cast<decltype(result.inject_addon_imgui_value)>(GetProcAddress(result.module, "ReShadeInjectAddonImGuiValue"));
+		result.get_runtime_toggle = reinterpret_cast<decltype(result.get_runtime_toggle)>(GetProcAddress(result.module, "ReShadeGetRuntimeToggle"));
+		result.set_runtime_toggle = reinterpret_cast<decltype(result.set_runtime_toggle)>(GetProcAddress(result.module, "ReShadeSetRuntimeToggle"));
+		result.reload_effects = reinterpret_cast<decltype(result.reload_effects)>(GetProcAddress(result.module, "ReShadeReloadEffects"));
 		return result;
 	}
 
@@ -1985,6 +2085,15 @@ namespace
 			stop();
 		}
 
+		void configure_preset(const reshade_exports *reshade, std::filesystem::path source_path, std::filesystem::path working_path, std::filesystem::path work_dir, bool auto_save)
+		{
+			_reshade = reshade;
+			_source_preset_path = std::move(source_path);
+			_working_preset_path = std::move(working_path);
+			_preset_work_dir = std::move(work_dir);
+			_auto_save_preset = auto_save;
+		}
+
 		void start()
 		{
 			_running = true;
@@ -2106,14 +2215,81 @@ namespace
 				",\"sharedAddonOverlayHeight\":" + std::to_string(_shared_addon_overlay != nullptr ? _shared_addon_overlay->height : 0);
 		}
 
+		// A retired working copy cannot be deleted right away: its cache entry is still dirty and the runtime's
+		// per-frame flush would write it straight back. Retry until each one sticks.
+		void purge_retired_presets()
+		{
+			if (_retired_preset_paths.empty())
+				return;
+
+			std::error_code ec;
+			const auto now = std::chrono::steady_clock::now();
+
+			_retired_preset_paths.erase(
+				std::remove_if(_retired_preset_paths.begin(), _retired_preset_paths.end(),
+					[&ec, now](const std::pair<std::filesystem::path, std::chrono::steady_clock::time_point> &retired) {
+						if (std::filesystem::exists(retired.first, ec))
+						{
+							std::filesystem::remove(retired.first, ec);
+							return false;
+						}
+
+						// 'ini_file::flush_cache' writes pending changes up to a second late, so keep watching
+						// until that window has clearly passed
+						return (now - retired.second) > std::chrono::seconds(3);
+					}),
+				_retired_preset_paths.end());
+		}
+
+		bool performance_mode_active() const
+		{
+			return _reshade != nullptr && _reshade->get_runtime_toggle != nullptr && _reshade->get_runtime_toggle(_runtime, "PerformanceMode");
+		}
+
+		void export_preset_to(const std::filesystem::path &path) const
+		{
+			_runtime->export_current_preset(path_utf8(path).c_str());
+		}
+
+		// Every mutating command funnels through here instead of calling 'save_current_preset' directly
+		void mark_preset_dirty()
+		{
+			// Uniform variables become compile-time constants in performance mode, so saving now would strip
+			// their values out of the preset entirely (see the note in 'runtime::save_current_preset')
+			if (performance_mode_active())
+				return;
+
+			_runtime->save_current_preset();
+
+			if (_auto_save_preset && !_source_preset_path.empty())
+			{
+				export_preset_to(_source_preset_path);
+				_preset_is_modified = false;
+			}
+			else
+			{
+				_preset_is_modified = true;
+			}
+		}
+
+		std::string preset_state_json() const
+		{
+			return ",\"presetPath\":" + json_string(path_utf8(_source_preset_path)) +
+				",\"presetModified\":" + (_preset_is_modified ? "true" : "false") +
+				",\"autoSavePreset\":" + (_auto_save_preset ? "true" : "false") +
+				",\"performanceMode\":" + (performance_mode_active() ? "true" : "false") +
+				",\"skipDisabledEffects\":" + ((_reshade != nullptr && _reshade->get_runtime_toggle != nullptr && _reshade->get_runtime_toggle(_runtime, "SkipLoadingDisabledEffects")) ? "true" : "false");
+		}
+
 		std::string execute(control_command &command)
 		{
 			try
 			{
 				if (command.method == "get_runtime_info")
 				{
-					std::string preset = runtime_string([&](char *buffer, size_t *size) { _runtime->get_current_preset_path(buffer, size); });
-					return make_response(command.id, "{\"width\":" + std::to_string(_width) + ",\"height\":" + std::to_string(_height) + ",\"presetPath\":" + json_string(preset) + ",\"loading\":" + (_runtime_loading && _runtime_loading() ? "true" : "false") + ",\"effectsEnabled\":" + (_runtime->get_effects_state() ? "true" : "false") + ",\"outputPath\":" + json_string(path_utf8(_output_path)) + ",\"renderFps\":" + std::to_string(_stats != nullptr ? _stats->render_fps() : 0.0) + ",\"previewFps\":" + std::to_string(_stats != nullptr ? _stats->preview_fps() : 0.0) + ",\"sharedPreviewHandle\":" + std::to_string(reinterpret_cast<uintptr_t>(_shared_preview != nullptr ? _shared_preview->handle : nullptr)) + ",\"sharedPreviewWidth\":" + std::to_string(_shared_preview != nullptr ? _shared_preview->width : 0) + ",\"sharedPreviewHeight\":" + std::to_string(_shared_preview != nullptr ? _shared_preview->height : 0) + shared_addon_overlay_json() + "}");
+					purge_retired_presets();
+
+					return make_response(command.id, "{\"width\":" + std::to_string(_width) + ",\"height\":" + std::to_string(_height) + preset_state_json() + ",\"loading\":" + (_runtime_loading && _runtime_loading() ? "true" : "false") + ",\"effectsEnabled\":" + (_runtime->get_effects_state() ? "true" : "false") + ",\"outputPath\":" + json_string(path_utf8(_output_path)) + ",\"renderFps\":" + std::to_string(_stats != nullptr ? _stats->render_fps() : 0.0) + ",\"previewFps\":" + std::to_string(_stats != nullptr ? _stats->preview_fps() : 0.0) + ",\"sharedPreviewHandle\":" + std::to_string(reinterpret_cast<uintptr_t>(_shared_preview != nullptr ? _shared_preview->handle : nullptr)) + ",\"sharedPreviewWidth\":" + std::to_string(_shared_preview != nullptr ? _shared_preview->width : 0) + ",\"sharedPreviewHeight\":" + std::to_string(_shared_preview != nullptr ? _shared_preview->height : 0) + shared_addon_overlay_json() + "}");
 				}
 				if (command.method == "list_state")
 				{
@@ -2189,7 +2365,7 @@ namespace
 					if (!json_get_bool(command.params, "enabled", enabled))
 						return make_error(command.id, "bad_params", "Missing enabled.");
 					_runtime->set_effects_state(enabled);
-					_runtime->save_current_preset();
+					mark_preset_dirty();
 					return make_response(command.id, "{}");
 				}
 				if (command.method == "set_technique_state")
@@ -2202,7 +2378,7 @@ namespace
 					if (technique.handle == 0)
 						return make_error(command.id, "not_found", "Technique not found.");
 					_runtime->set_technique_state(technique, enabled);
-					_runtime->save_current_preset();
+					mark_preset_dirty();
 					return make_response(command.id, "{}");
 				}
 				if (command.method == "set_uniform")
@@ -2224,7 +2400,7 @@ namespace
 						float values[16] = {};
 						for (size_t i = 0; i < count && i < std::size(values); ++i) values[i] = static_cast<float>(numbers[std::min(i, numbers.size() - 1)]);
 						_runtime->set_uniform_value_float(variable, values, count);
-						_runtime->save_current_preset();
+						mark_preset_dirty();
 					}
 					else if (base_type == reshade::api::format::r32_sint)
 					{
@@ -2233,7 +2409,7 @@ namespace
 						int32_t values[16] = {};
 						for (size_t i = 0; i < count && i < std::size(values); ++i) values[i] = static_cast<int32_t>(numbers[std::min(i, numbers.size() - 1)]);
 						_runtime->set_uniform_value_int(variable, values, count);
-						_runtime->save_current_preset();
+						mark_preset_dirty();
 					}
 					else if (base_type == reshade::api::format::r32_uint)
 					{
@@ -2242,7 +2418,7 @@ namespace
 						uint32_t values[16] = {};
 						for (size_t i = 0; i < count && i < std::size(values); ++i) values[i] = static_cast<uint32_t>(std::max(0.0, numbers[std::min(i, numbers.size() - 1)]));
 						_runtime->set_uniform_value_uint(variable, values, count);
-						_runtime->save_current_preset();
+						mark_preset_dirty();
 					}
 					else
 					{
@@ -2256,7 +2432,7 @@ namespace
 						bool values[16] = {};
 						for (size_t i = 0; i < count && i < std::size(values); ++i) values[i] = value;
 						_runtime->set_uniform_value_bool(variable, values, count);
-						_runtime->save_current_preset();
+						mark_preset_dirty();
 					}
 					return make_response(command.id, "{}");
 				}
@@ -2269,7 +2445,7 @@ namespace
 					if (variable.handle == 0)
 						return make_error(command.id, "not_found", "Uniform not found.");
 					_runtime->reset_uniform_value(variable);
-					_runtime->save_current_preset();
+					mark_preset_dirty();
 					return make_response(command.id, "{}");
 				}
 				if (command.method == "reorder_techniques")
@@ -2304,11 +2480,22 @@ namespace
 						_runtime->set_preprocessor_definition(name.c_str(), value.c_str());
 						_runtime->reload_effect_next_frame(nullptr);
 					}
-					_runtime->save_current_preset();
+					mark_preset_dirty();
 					return make_response(command.id, "{}");
 				}
 				if (command.method == "reload_effects")
 				{
+					bool force_all = false;
+					if (json_get_bool(command.params, "forceAll", force_all) && force_all)
+					{
+						// Brings back effects that were skipped while "load only enabled effects" was on
+						if (_reshade == nullptr || _reshade->reload_effects == nullptr)
+							return make_error(command.id, "not_supported", "This ReShade build cannot force-load all effects.");
+
+						_reshade->reload_effects(_runtime, true);
+						return make_response(command.id, "{}");
+					}
+
 					std::string effect_name;
 					_runtime->reload_effect_next_frame(json_get_raw_string(command.params, "effectName", effect_name) && !effect_name.empty() ? effect_name.c_str() : nullptr);
 					return make_response(command.id, "{}");
@@ -2355,7 +2542,71 @@ namespace
 				}
 				if (command.method == "save_preset")
 				{
+					if (performance_mode_active())
+						return make_error(command.id, "not_supported", "Cannot save a preset while performance mode is enabled, because uniform variables are compiled into constants.");
+					if (_source_preset_path.empty())
+						return make_error(command.id, "no_preset", "No preset file is selected.");
+
 					_runtime->save_current_preset();
+					export_preset_to(_source_preset_path);
+					_preset_is_modified = false;
+
+					return make_response(command.id, "{\"path\":" + json_string(path_utf8(_source_preset_path)) + ",\"saved\":true}");
+				}
+				if (command.method == "save_preset_as")
+				{
+					if (performance_mode_active())
+						return make_error(command.id, "not_supported", "Cannot save a preset while performance mode is enabled, because uniform variables are compiled into constants.");
+
+					std::string path;
+					if (!json_get_raw_string(command.params, "path", path) || path.empty())
+						return make_error(command.id, "bad_params", "Missing preset path.");
+
+					const std::filesystem::path target = std::filesystem::absolute(widen_utf8(path));
+
+					_runtime->save_current_preset();
+					export_preset_to(target);
+
+					// Subsequent saves follow the file the user just wrote
+					_source_preset_path = target;
+					_preset_is_modified = false;
+
+					return make_response(command.id, "{\"path\":" + json_string(path_utf8(_source_preset_path)) + ",\"saved\":true}");
+				}
+				if (command.method == "set_auto_save_preset")
+				{
+					bool enabled = false;
+					if (!json_get_bool(command.params, "enabled", enabled))
+						return make_error(command.id, "bad_params", "Missing enabled.");
+
+					_auto_save_preset = enabled;
+
+					// Flush whatever accumulated while auto save was off
+					if (_auto_save_preset && _preset_is_modified && !_source_preset_path.empty() && !performance_mode_active())
+					{
+						_runtime->save_current_preset();
+						export_preset_to(_source_preset_path);
+						_preset_is_modified = false;
+					}
+
+					return make_response(command.id, "{}");
+				}
+				if (command.method == "set_performance_mode" || command.method == "set_effect_load_skipping")
+				{
+					bool enabled = false;
+					if (!json_get_bool(command.params, "enabled", enabled))
+						return make_error(command.id, "bad_params", "Missing enabled.");
+					if (_reshade == nullptr || _reshade->set_runtime_toggle == nullptr)
+						return make_error(command.id, "not_supported", "This ReShade build does not expose runtime toggles.");
+
+					const char *const key = command.method == "set_performance_mode" ? "PerformanceMode" : "SkipLoadingDisabledEffects";
+
+					// Performance mode bakes preset values into the shaders, so anything still pending has to land first
+					if (enabled && _preset_is_modified && command.method == "set_performance_mode")
+						_runtime->save_current_preset();
+
+					_reshade->set_runtime_toggle(_runtime, key, enabled);
+
 					return make_response(command.id, "{}");
 				}
 				if (command.method == "export_preset")
@@ -2366,13 +2617,39 @@ namespace
 					_runtime->export_current_preset(path.c_str());
 					return make_response(command.id, "{}");
 				}
-				if (command.method == "set_preset")
+				// "set_preset" is the older name, kept for the legacy WPF front-end
+				if (command.method == "load_preset" || command.method == "set_preset")
 				{
 					std::string path;
 					if (!json_get_raw_string(command.params, "path", path) || path.empty())
 						return make_error(command.id, "bad_params", "Missing preset path.");
-					_runtime->set_current_preset_path(path.c_str());
-					return make_response(command.id, "{}");
+
+					const std::filesystem::path source = std::filesystem::absolute(widen_utf8(path));
+
+					const std::wstring extension = source.extension().wstring();
+					if (_wcsicmp(extension.c_str(), L".ini") != 0 && _wcsicmp(extension.c_str(), L".txt") != 0)
+						return make_error(command.id, "bad_params", "A preset must be an .ini or .txt file.");
+
+					// A fresh path is needed on every load: the runtime skips reloading when the path is unchanged,
+					// and 'ini_file::load_cache' will not re-read a file it still holds pending modifications for
+					const std::filesystem::path previous = _working_preset_path;
+					const std::filesystem::path next = working_preset_path(_preset_work_dir, ++_working_preset_index);
+					if (!write_working_preset(source, next))
+						return make_error(command.id, "preset_copy_failed", "Could not create a working copy of the preset.");
+
+					// This saves the outgoing preset first, but that is the throwaway working copy, never the user file
+					_runtime->set_current_preset_path(path_utf8(next).c_str());
+
+					_working_preset_path = next;
+					_source_preset_path = source;
+					_preset_is_modified = false;
+
+					if (!previous.empty() && previous != next)
+						_retired_preset_paths.emplace_back(previous, std::chrono::steady_clock::now());
+
+					purge_retired_presets();
+
+					return make_response(command.id, "{\"path\":" + json_string(path_utf8(_source_preset_path)) + "}");
 				}
 				if (command.method == "save_output")
 				{
@@ -2425,6 +2702,14 @@ namespace
 		addon_overlay_input_callback _addon_overlay_input;
 		addon_overlay_resize_callback _addon_overlay_resize;
 		runtime_loading_callback _runtime_loading;
+		const reshade_exports *_reshade = nullptr;
+		std::filesystem::path _source_preset_path;
+		std::filesystem::path _working_preset_path;
+		std::filesystem::path _preset_work_dir;
+		std::vector<std::pair<std::filesystem::path, std::chrono::steady_clock::time_point>> _retired_preset_paths;
+		unsigned int _working_preset_index = 0;
+		bool _auto_save_preset = false;
+		bool _preset_is_modified = false;
 		std::atomic_bool _running = false;
 		std::thread _thread;
 		std::mutex _queue_mutex;
@@ -2524,7 +2809,10 @@ int wmain(int argc, wchar_t **argv)
 	const std::vector<float> motion_data(static_cast<size_t>(width) * height * 2, 0.0f);
 
 	const std::filesystem::path work_dir = prototype_directory();
-	const std::filesystem::path preset_path = make_preset(opts, work_dir);
+	std::filesystem::path source_preset_path;
+	const std::filesystem::path preset_path = make_preset(opts, work_dir, source_preset_path);
+	// With no preset of the user's own in play the fallback is our own file, so keeping it up to date costs nothing
+	const bool auto_save_preset = opts.auto_save_preset || opts.preset_path.empty();
 	const std::filesystem::path config_path = make_config(opts, work_dir, preset_path, width, height);
 
 	const HWND parent_hwnd = reinterpret_cast<HWND>(opts.parent_hwnd);
@@ -2854,6 +3142,7 @@ int wmain(int argc, wchar_t **argv)
 			return reshade.is_runtime_loading != nullptr && reshade.is_runtime_loading(runtime);
 		};
 		control = std::make_unique<control_server>(opts.control_pipe, runtime, width, height, opts.output_path, &stats, opts.preview_shared ? &shared_preview : nullptr, opts.addon_overlay_shared ? &shared_addon_overlay : nullptr, switch_input_paths, save_current_output, save_reshade_screenshot, set_input_watch_enabled, addon_state, addon_imgui_state, addon_imgui_input, addon_overlay_select, addon_overlay_input, addon_overlay_resize, runtime_loading);
+		control->configure_preset(&reshade, source_preset_path, preset_path, work_dir, auto_save_preset);
 		control->start();
 	}
 

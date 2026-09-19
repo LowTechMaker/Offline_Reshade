@@ -178,6 +178,13 @@ namespace reshade
 		void load_config();
 		void save_config() const;
 
+		// Offline host controls (see 'ReShadeGetRuntimeToggle' / 'ReShadeSetRuntimeToggle' / 'ReShadeReloadEffects')
+		bool is_performance_mode() const { return _performance_mode; }
+		void set_performance_mode(bool value);
+		bool is_effect_load_skipping() const { return _effect_load_skipping; }
+		void set_effect_load_skipping(bool value);
+		void reload_all_effects(bool force_load_all);
+
 	private:
 		static void check_for_update();
 

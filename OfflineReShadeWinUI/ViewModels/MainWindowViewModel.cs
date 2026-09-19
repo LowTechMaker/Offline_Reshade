@@ -52,6 +52,9 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     private string _currentDepthProfile = "kks";
     private PersistedProfilePaths _kksPaths = new();
     private PersistedProfilePaths _kkPaths = new();
+    private string _activePresetPath = string.Empty;
+    private bool _presetModified;
+    private bool _isTogglingRuntimeOption;
 
     public MainWindowViewModel(AppPaths paths)
     {
@@ -76,7 +79,10 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         SavePngCommand = new AsyncRelayCommand(SavePngAsync);
         ReShadeShotCommand = new AsyncRelayCommand(ReShadeShotAsync, () => _rpc.IsConnected);
         ReloadCommand = new AsyncRelayCommand(ReloadAsync, () => _rpc.IsConnected);
-        SavePresetCommand = new AsyncRelayCommand(SavePresetAsync, () => _rpc.IsConnected);
+        SavePresetCommand = new AsyncRelayCommand(SavePresetAsync, () => _rpc.IsConnected && !Settings.PerformanceMode && PresetModified);
+        SavePresetAsCommand = new AsyncRelayCommand(SavePresetAsAsync, () => _rpc.IsConnected && !Settings.PerformanceMode);
+        LoadPresetCommand = new AsyncRelayCommand(LoadPresetAsync);
+        ForceLoadAllEffectsCommand = new AsyncRelayCommand(ForceLoadAllEffectsAsync, () => _rpc.IsConnected);
         ToggleInputModeCommand = new AsyncRelayCommand(ToggleInputModeAsync);
         ToggleGalleryPanelCommand = new RelayCommand(() => IsGalleryPanelOpen = !IsGalleryPanelOpen);
         RefreshGalleryCommand = new RelayCommand(RefreshGalleryItems);
@@ -86,7 +92,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         PickColorCommand = new AsyncRelayCommand(async () => await PickPathAsync(path => Settings.ColorPath = path, picker => picker.PickPngAsync()));
         PickDepthCommand = new AsyncRelayCommand(async () => await PickPathAsync(path => Settings.DepthPath = path, picker => picker.PickDepthAsync()));
         PickEffectDirCommand = new AsyncRelayCommand(async () => await PickPathAsync(path => Settings.EffectDir = path, picker => picker.PickFolderAsync()));
-        PickPresetCommand = new AsyncRelayCommand(async () => await PickPathAsync(path => Settings.PresetPath = path, picker => picker.PickIniAsync()));
+        PickPresetCommand = new AsyncRelayCommand(LoadPresetAsync);
         PickOutputCommand = new AsyncRelayCommand(async () => await PickPathAsync(path => Settings.OutputPath = path, picker => picker.PickOutputPngAsync()));
         PickGalleryInputFolderCommand = new AsyncRelayCommand(async () => await PickPathAsync(path => Settings.GalleryInputFolder = path, picker => picker.PickFolderAsync()));
         PickGalleryOutputFolderCommand = new AsyncRelayCommand(async () => await PickPathAsync(path => Settings.GalleryOutputFolder = path, picker => picker.PickFolderAsync()));
@@ -111,6 +117,9 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand ReShadeShotCommand { get; }
     public AsyncRelayCommand ReloadCommand { get; }
     public AsyncRelayCommand SavePresetCommand { get; }
+    public AsyncRelayCommand SavePresetAsCommand { get; }
+    public AsyncRelayCommand LoadPresetCommand { get; }
+    public AsyncRelayCommand ForceLoadAllEffectsCommand { get; }
     public AsyncRelayCommand ToggleInputModeCommand { get; }
     public RelayCommand ToggleGalleryPanelCommand { get; }
     public RelayCommand RefreshGalleryCommand { get; }
@@ -199,6 +208,44 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     public uint SharedAddonOverlayWidth { get => _sharedAddonOverlayWidth; private set => SetProperty(ref _sharedAddonOverlayWidth, value); }
     public uint SharedAddonOverlayHeight { get => _sharedAddonOverlayHeight; private set => SetProperty(ref _sharedAddonOverlayHeight, value); }
 
+    /// <summary>The preset file the user picked. The runtime edits a private copy of it, never this file.</summary>
+    public string ActivePresetPath
+    {
+        get => _activePresetPath;
+        private set
+        {
+            if (SetProperty(ref _activePresetPath, value))
+                OnPropertyChanged(nameof(PresetDisplayName));
+        }
+    }
+
+    public string PresetDisplayName
+    {
+        get
+        {
+            var name = string.IsNullOrWhiteSpace(ActivePresetPath) ? "(none)" : Path.GetFileName(ActivePresetPath);
+            return PresetModified ? name + " *" : name;
+        }
+    }
+
+    public bool PresetModified
+    {
+        get => _presetModified;
+        private set
+        {
+            if (SetProperty(ref _presetModified, value))
+            {
+                OnPropertyChanged(nameof(PresetDisplayName));
+                SavePresetCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Uniforms are compiled into constants in performance mode, so there is nothing left to tweak.</summary>
+    public bool CanEditUniforms => !Settings.PerformanceMode;
+
+    public bool IsPerformanceModeNoticeVisible => Settings.PerformanceMode;
+
     public void Initialize(SettingsPickerService picker)
     {
         _picker = picker;
@@ -233,6 +280,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
             ApplyIfNotNull(settings.GalleryBatchFrameDelay, value => Settings.GalleryBatchFrameDelay = value);
             if (settings.ShowFps.HasValue)
                 Settings.ShowFps = settings.ShowFps.Value;
+            if (settings.AutoSavePreset.HasValue)
+                Settings.AutoSavePreset = settings.AutoSavePreset.Value;
+            if (settings.PerformanceMode.HasValue)
+                Settings.PerformanceMode = settings.PerformanceMode.Value;
+            if (settings.SkipDisabledEffects.HasValue)
+                Settings.SkipDisabledEffects = settings.SkipDisabledEffects.Value;
             if (settings.SliderDragSensitivity.HasValue)
                 Settings.SliderDragSensitivity = settings.SliderDragSensitivity.Value;
             if (settings.SliderSymLog.HasValue)
@@ -258,12 +311,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     {
         await _rpc.CallAsync("set_effects_state", new { enabled });
         EffectsEnabled = enabled;
+        NotePresetChanged();
     }
 
     public async Task SetTechniqueStateAsync(TechniqueViewModel technique, bool enabled)
     {
         technique.IsEnabled = enabled;
         await _rpc.CallAsync("set_technique_state", new { id = technique.Id, enabled });
+        NotePresetChanged();
         await RefreshControlStateAsync();
     }
 
@@ -279,6 +334,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             await _rpc.CallAsync("reorder_techniques", new { ids });
+            NotePresetChanged();
         }
         catch
         {
@@ -345,6 +401,17 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     public async Task SetUniformAsync(UniformViewModel uniform, object value)
     {
         await _rpc.CallAsync("set_uniform", new { id = uniform.Id, value });
+        NotePresetChanged();
+    }
+
+    /// <summary>
+    /// Mirrors the runtime's own dirty flag so the toolbar shows it right away instead of waiting for the
+    /// next state refresh. With auto save on the runtime has already written the file, so nothing is pending.
+    /// </summary>
+    private void NotePresetChanged()
+    {
+        if (!Settings.AutoSavePreset && !Settings.PerformanceMode)
+            PresetModified = true;
     }
 
     public async Task SetPreprocessorDefinitionAsync(PreprocessorDefinitionViewModel definition, string value)
@@ -352,6 +419,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         definition.Value = value;
         MarkEffectsLoading();
         await _rpc.CallAsync("set_preprocessor_definition", new { effectName = definition.EffectName, name = definition.Name, value });
+        NotePresetChanged();
         await Task.Delay(500);
         await RefreshControlStateAsync();
     }
@@ -675,8 +743,178 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
     private async Task SavePresetAsync()
     {
-        await _rpc.CallAsync("save_preset");
-        AppendLog("Preset saved.");
+        try
+        {
+            var result = await _rpc.CallAsync("save_preset");
+            var path = result.TryGetProperty("path", out var savedPath) ? savedPath.GetString() : ActivePresetPath;
+            PresetModified = false;
+            AppendLog($"Preset saved to {path}.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Preset not saved: {ex.Message}");
+        }
+    }
+
+    private async Task SavePresetAsAsync()
+    {
+        if (_picker == null)
+            return;
+
+        var suggested = string.IsNullOrWhiteSpace(ActivePresetPath) ? "ReShadePreset.ini" : Path.GetFileName(ActivePresetPath);
+        var path = await _picker.PickSaveIniAsync(suggested);
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            var result = await _rpc.CallAsync("save_preset_as", new { path });
+            ActivePresetPath = result.TryGetProperty("path", out var savedPath) ? savedPath.GetString() ?? path : path;
+            Settings.PresetPath = ActivePresetPath;
+            PresetModified = false;
+            AppendLog($"Preset saved to {ActivePresetPath}.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Preset not saved: {ex.Message}");
+        }
+    }
+
+    private async Task LoadPresetAsync()
+    {
+        if (_picker == null)
+            return;
+
+        var path = await _picker.PickIniAsync();
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        await ApplyPresetPathAsync(path);
+    }
+
+    /// <summary>
+    /// Hands the preset to a running runtime straight away; when nothing is running it is simply remembered
+    /// and picked up by the next <c>--preset</c> on start-up.
+    /// </summary>
+    private async Task ApplyPresetPathAsync(string path)
+    {
+        Settings.PresetPath = path;
+
+        if (!_rpc.IsConnected)
+        {
+            ActivePresetPath = path;
+            AppendLog($"Preset set to {path}. It will be applied when the preview starts.");
+            return;
+        }
+
+        try
+        {
+            MarkEffectsLoading();
+            var result = await _rpc.CallAsync("load_preset", new { path });
+            ActivePresetPath = result.TryGetProperty("path", out var loadedPath) ? loadedPath.GetString() ?? path : path;
+            PresetModified = false;
+            AppendLog($"Preset loaded from {ActivePresetPath}.");
+            await RefreshControlStateAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Preset not loaded: {ex.Message}");
+        }
+    }
+
+    private Task SendRuntimeOptionAsync(string propertyName) => propertyName switch
+    {
+        nameof(SettingsViewModel.PerformanceMode) => SetRuntimeToggleAsync("set_performance_mode", Settings.PerformanceMode, "Performance mode"),
+        nameof(SettingsViewModel.SkipDisabledEffects) => SetRuntimeToggleAsync("set_effect_load_skipping", Settings.SkipDisabledEffects, "Load only enabled effects"),
+        _ => SetAutoSavePresetAsync()
+    };
+
+    private async Task SetAutoSavePresetAsync()
+    {
+        if (!_rpc.IsConnected)
+            return;
+
+        try
+        {
+            await _rpc.CallAsync("set_auto_save_preset", new { enabled = Settings.AutoSavePreset });
+            if (Settings.AutoSavePreset)
+                PresetModified = false;
+            AppendLog($"Preset auto save {(Settings.AutoSavePreset ? "enabled" : "disabled")}.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Preset auto save could not be changed: {ex.Message}");
+        }
+    }
+
+    private async Task ForceLoadAllEffectsAsync()
+    {
+        try
+        {
+            MarkEffectsLoading();
+            await _rpc.CallAsync("reload_effects", new { forceAll = true });
+            await Task.Delay(500);
+            await RefreshControlStateAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Both of these recompile every effect, so they go through the same loading path as an explicit reload.
+    /// </summary>
+    private async Task SetRuntimeToggleAsync(string method, bool enabled, string label)
+    {
+        if (!_rpc.IsConnected)
+            return;
+
+        try
+        {
+            MarkEffectsLoading();
+            await _rpc.CallAsync(method, new { enabled });
+            AppendLog($"{label} {(enabled ? "enabled" : "disabled")}. Recompiling effects...");
+            await Task.Delay(500);
+            await RefreshControlStateAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"{label} could not be changed: {ex.Message}");
+        }
+    }
+
+    private void ApplyRuntimePresetState(JsonElement runtimeInfo)
+    {
+        if (runtimeInfo.TryGetProperty("presetPath", out var presetPath) && presetPath.ValueKind == JsonValueKind.String)
+        {
+            var value = presetPath.GetString() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(value))
+                ActivePresetPath = value;
+        }
+
+        if (runtimeInfo.TryGetProperty("presetModified", out var modified) && modified.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            PresetModified = modified.GetBoolean();
+
+        // The runtime is the source of truth for these, so mirror them back without re-issuing the RPC
+        _isTogglingRuntimeOption = true;
+        try
+        {
+            if (runtimeInfo.TryGetProperty("autoSavePreset", out var autoSave) && autoSave.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                Settings.AutoSavePreset = autoSave.GetBoolean();
+            if (runtimeInfo.TryGetProperty("performanceMode", out var performanceMode) && performanceMode.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                Settings.PerformanceMode = performanceMode.GetBoolean();
+            if (runtimeInfo.TryGetProperty("skipDisabledEffects", out var skipDisabled) && skipDisabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                Settings.SkipDisabledEffects = skipDisabled.GetBoolean();
+        }
+        finally
+        {
+            _isTogglingRuntimeOption = false;
+        }
+
+        OnPropertyChanged(nameof(CanEditUniforms));
+        OnPropertyChanged(nameof(IsPerformanceModeNoticeVisible));
+        RaiseControlCommandStates();
     }
 
     private async Task RefreshControlStateAsync()
@@ -688,6 +926,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             var runtimeInfo = await _rpc.CallAsync("get_runtime_info");
+            ApplyRuntimePresetState(runtimeInfo);
             if (IsRuntimeLoading(runtimeInfo))
             {
                 MarkEffectsLoading();
@@ -915,6 +1154,22 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     {
         ScheduleSettingsSave();
 
+        if (e.PropertyName is nameof(SettingsViewModel.PerformanceMode)
+            or nameof(SettingsViewModel.SkipDisabledEffects)
+            or nameof(SettingsViewModel.AutoSavePreset))
+        {
+            if (e.PropertyName == nameof(SettingsViewModel.PerformanceMode))
+            {
+                OnPropertyChanged(nameof(CanEditUniforms));
+                OnPropertyChanged(nameof(IsPerformanceModeNoticeVisible));
+                RaiseControlCommandStates();
+            }
+
+            // Skip values that came from the runtime itself or from the persisted settings on start-up
+            if (!_isRestoringSettings && !_isTogglingRuntimeOption)
+                _ = SendRuntimeOptionAsync(e.PropertyName!);
+        }
+
         if (e.PropertyName == nameof(SettingsViewModel.DepthProfile))
         {
             _hasPersistedDepthProfile = true;
@@ -1025,6 +1280,9 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
             ShowFps = Settings.ShowFps,
             SliderDragSensitivity = Settings.SliderDragSensitivity,
             SliderSymLog = Settings.SliderSymLog,
+            AutoSavePreset = Settings.AutoSavePreset,
+            PerformanceMode = Settings.PerformanceMode,
+            SkipDisabledEffects = Settings.SkipDisabledEffects,
             InputMode = InputMode,
             KksPaths = _kksPaths,
             KkPaths = _kkPaths
@@ -1077,7 +1335,10 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
             .Add("--depth-profile", ActiveDepthProfile)
             .Add("--depth-downsample", Settings.DepthDownsample)
             .Add("--effect-dir", Settings.EffectDir)
-            .Add("--preset", Settings.PresetPath);
+            .Add("--preset", Settings.PresetPath)
+            .Add("--performance-mode", Settings.PerformanceMode ? "1" : "0")
+            .Add("--skip-disabled-effects", Settings.SkipDisabledEffects ? "1" : "0")
+            .Add("--auto-save-preset", Settings.AutoSavePreset ? "1" : "0");
     }
 
     private bool UseCpuPreview => string.Equals(Settings.PreviewTransport, "CPU", StringComparison.OrdinalIgnoreCase);
@@ -1443,6 +1704,8 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         ReShadeShotCommand.RaiseCanExecuteChanged();
         ReloadCommand.RaiseCanExecuteChanged();
         SavePresetCommand.RaiseCanExecuteChanged();
+        SavePresetAsCommand.RaiseCanExecuteChanged();
+        ForceLoadAllEffectsCommand.RaiseCanExecuteChanged();
         RaiseBatchApplyCanExecuteChanged();
     }
 

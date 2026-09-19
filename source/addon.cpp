@@ -367,6 +367,42 @@ bool ReShadeIsEffectRuntimeLoading(reshade::api::effect_runtime *runtime)
 	return runtime != nullptr && static_cast<reshade::runtime *>(runtime)->is_loading();
 }
 
+bool ReShadeGetRuntimeToggle(reshade::api::effect_runtime *runtime, const char *key)
+{
+	if (runtime == nullptr || key == nullptr)
+		return false;
+
+	const reshade::runtime *const impl = static_cast<reshade::runtime *>(runtime);
+
+	if (std::strcmp(key, "PerformanceMode") == 0)
+		return impl->is_performance_mode();
+	if (std::strcmp(key, "SkipLoadingDisabledEffects") == 0)
+		return impl->is_effect_load_skipping();
+
+	return false;
+}
+
+void ReShadeSetRuntimeToggle(reshade::api::effect_runtime *runtime, const char *key, bool value)
+{
+	if (runtime == nullptr || key == nullptr)
+		return;
+
+	reshade::runtime *const impl = static_cast<reshade::runtime *>(runtime);
+
+	if (std::strcmp(key, "PerformanceMode") == 0)
+		impl->set_performance_mode(value);
+	else if (std::strcmp(key, "SkipLoadingDisabledEffects") == 0)
+		impl->set_effect_load_skipping(value);
+}
+
+void ReShadeReloadEffects(reshade::api::effect_runtime *runtime, bool force_load_all)
+{
+	if (runtime == nullptr)
+		return;
+
+	static_cast<reshade::runtime *>(runtime)->reload_all_effects(force_load_all);
+}
+
 #include "d3d9/d3d9_impl_device.hpp"
 #include "d3d9/d3d9_impl_swapchain.hpp"
 #include "d3d10/d3d10_impl_device.hpp"
