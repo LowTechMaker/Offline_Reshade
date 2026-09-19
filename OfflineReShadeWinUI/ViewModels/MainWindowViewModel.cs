@@ -659,14 +659,52 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
             if (IsGalleryMode && SelectedGalleryItem != null && _rpc.IsConnected)
                 await SelectGalleryItemAsync(SelectedGalleryItem);
             await _rpc.CallAsync("save_screenshot");
-            AppendLog("ReShade screenshot saved: " + ActiveOutputPath);
-            RefreshOutputInfo();
+
+            if (IsGalleryMode && SelectedGalleryItem != null)
+            {
+                AppendLog("ReShade screenshot saved: " + ActiveOutputPath);
+                RefreshOutputInfo();
+            }
+            else
+            {
+                MoveShotToTimestampedPath();
+            }
+
             StatusText = "Saved";
         }
         catch (Exception ex)
         {
             AppendLog(ex.Message);
             StatusText = "Failed";
+        }
+    }
+
+    private void MoveShotToTimestampedPath()
+    {
+        var source = Settings.OutputPath;
+        try
+        {
+            var outputDir = Path.GetDirectoryName(source);
+            if (string.IsNullOrWhiteSpace(outputDir) || !File.Exists(source))
+            {
+                AppendLog("ReShade screenshot saved: " + source);
+                RefreshOutputInfo();
+                return;
+            }
+
+            Directory.CreateDirectory(outputDir);
+            var fileName = ShotNaming.BuildShotFileName(ShotNaming.TryReadProductName(Settings.ColorPath), DateTime.Now);
+            var target = ShotNaming.ResolveNonClashingPath(Path.Combine(outputDir, fileName));
+
+            File.Move(source, target);
+            AppendLog("ReShade screenshot saved: " + target);
+            PreviewInfoText = Path.GetFileName(target);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("ReShade screenshot saved: " + source);
+            AppendLog("Could not rename it to a timestamped file: " + ex.Message);
+            RefreshOutputInfo();
         }
     }
 
