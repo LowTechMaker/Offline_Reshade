@@ -66,6 +66,7 @@ protected:
 
 	std::string _remapped_semantics[15];
 	std::vector<std::tuple<type, constant, id>> _constant_lookup;
+	std::vector<id> _constant_value_ids;
 	std::vector<sampler_binding> _sampler_lookup;
 
 	unsigned int _texture_semantic_index = 0;
@@ -1041,6 +1042,9 @@ protected:
 			code += "(SPEC_CONSTANT_" + info.unique_name + ");\n";
 
 			_module.spec_constants.push_back(info);
+
+			// Specialization constants are emitted as "static const", so they fold like any other constant
+			_constant_value_ids.push_back(res);
 		}
 		else
 		{
@@ -1455,6 +1459,16 @@ protected:
 		code += " = " + id_to_name(value) + ";\n";
 	}
 
+	// Attributes on a selection statement whose condition is a compile-time constant do not stay put:
+	// D3DCompiler folds the statement away and carries the attribute over to whatever it folds into. Two
+	// of them meeting on the same statement is a hard error ("X3524: duplicate attribute branch"), which
+	// nested constant conditions run into easily. Uniform variables become constants when they are
+	// converted to specialization constants, so this is common in performance mode.
+	bool is_constant_value(id value) const
+	{
+		return std::find(_constant_value_ids.begin(), _constant_value_ids.end(), value) != _constant_value_ids.end();
+	}
+
 	id   emit_constant(const type &data_type, const constant &data) override
 	{
 		const id res = make_id();
@@ -1488,6 +1502,7 @@ protected:
 			code += " = ";
 			write_constant(code, data_type, data);
 			code += ";\n";
+			_constant_value_ids.push_back(res);
 			return res;
 		}
 
@@ -1495,6 +1510,7 @@ protected:
 		write_constant(code, data_type, data);
 		define_name<naming::expression>(res, std::move(code));
 
+		_constant_value_ids.push_back(res);
 		return res;
 	}
 
@@ -1796,8 +1812,11 @@ protected:
 
 		code += '\t';
 
-		if (flags & 0x1) code += "[flatten] ";
-		if (flags & 0x2) code += "[branch] ";
+		if (!is_constant_value(condition_value))
+		{
+			if (flags & 0x1) code += "[flatten] ";
+			if (flags & 0x2) code += "[branch] ";
+		}
 
 		code += "if (" + id_to_name(condition_value) + ")\n\t{\n";
 		code += true_statement_data;
@@ -1871,7 +1890,7 @@ protected:
 		if (flags & 0x1)
 			attributes += "[unroll] ";
 		if (flags & 0x2)
-			attributes += _shader_model >= 40 ? "[fastopt] " : "[loop] ";
+			attributes += "[loop] ";
 
 		// Condition value can be missing in infinite loop constructs like "for (;;)"
 		std::string condition_name = condition_value != 0 ? id_to_name(condition_value) : "true";
@@ -1980,10 +1999,13 @@ protected:
 
 			code += '\t';
 
-			if (flags & 0x1) code += "[flatten] ";
-			if (flags & 0x2) code += "[branch] ";
-			if (flags & 0x4) code += "[forcecase] ";
-			if (flags & 0x8) code += "[call] ";
+			if (!is_constant_value(selector_value))
+			{
+				if (flags & 0x1) code += "[flatten] ";
+				if (flags & 0x2) code += "[branch] ";
+				if (flags & 0x4) code += "[forcecase] ";
+				if (flags & 0x8) code += "[call] ";
+			}
 
 			code += "switch (" + id_to_name(selector_value) + ")\n\t{\n";
 
@@ -2043,8 +2065,11 @@ protected:
 
 			code += "\t[unroll] do { "; // This dummy loop makes "break" statements work
 
-			if (flags & 0x1) code += "[flatten] ";
-			if (flags & 0x2) code += "[branch] ";
+			if (!is_constant_value(selector_value))
+			{
+				if (flags & 0x1) code += "[flatten] ";
+				if (flags & 0x2) code += "[branch] ";
+			}
 
 			std::vector<id> labels = case_literal_and_labels;
 			for (size_t i = 0; i < labels.size(); i += 2)
