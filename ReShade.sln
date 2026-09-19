@@ -47,6 +47,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OfflineReShadeWinUI", "OfflineReShadeWinUI\OfflineReShadeWinUI.csproj", "{47D669EC-0E87-486D-AD62-00817220802E}"
 EndProject
 
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OfflineReShadePreviewBridge", "OfflineReShadePreviewBridge.vcxproj", "{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug App|32-bit = Debug App|32-bit
@@ -289,6 +291,24 @@ Global
 		{B74156C3-51A6-4A9C-A331-7A2FD20D0110}.Release|32-bit.ActiveCfg = Release|x64
 		{B74156C3-51A6-4A9C-A331-7A2FD20D0110}.Release|64-bit.ActiveCfg = Release|x64
 		{B74156C3-51A6-4A9C-A331-7A2FD20D0110}.Release|64-bit.Build.0 = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug App|32-bit.ActiveCfg = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug App|64-bit.ActiveCfg = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug App|64-bit.Build.0 = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug Setup|32-bit.ActiveCfg = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug Setup|64-bit.ActiveCfg = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug Setup|64-bit.Build.0 = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug|32-bit.ActiveCfg = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug|64-bit.ActiveCfg = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Debug|64-bit.Build.0 = Debug|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release App|32-bit.ActiveCfg = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release App|64-bit.ActiveCfg = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release App|64-bit.Build.0 = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release Setup|32-bit.ActiveCfg = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release Setup|64-bit.ActiveCfg = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release Setup|64-bit.Build.0 = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release|32-bit.ActiveCfg = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release|64-bit.ActiveCfg = Release|x64
+		{E30A5A58-69A6-4B01-96D0-6E0F5E3D28F2}.Release|64-bit.Build.0 = Release|x64
 		{5F3A7618-6E98-4697-915B-2C267E7BB9C2}.Debug App|32-bit.ActiveCfg = Debug|Any CPU
 		{5F3A7618-6E98-4697-915B-2C267E7BB9C2}.Debug App|64-bit.ActiveCfg = Debug|Any CPU
 		{5F3A7618-6E98-4697-915B-2C267E7BB9C2}.Debug App|64-bit.Build.0 = Debug|Any CPU
